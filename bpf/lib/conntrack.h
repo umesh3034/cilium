@@ -27,6 +27,7 @@
 #include "dbg.h"
 #include "l4.h"
 #include "nat46.h"
+#include "nat.h"
 
 #define CT_DEFAULT_LIFETIME_TCP		21600	/* 6 hours */
 #define CT_DEFAULT_LIFETIME_NONTCP	60	/* 60 seconds */
@@ -60,8 +61,6 @@
 
 #ifdef CONNTRACK
 
-#define TUPLE_F_OUT		0	/* Outgoing flow */
-#define TUPLE_F_IN		1	/* Incoming flow */
 #define TUPLE_F_RELATED		2	/* Flow represents related packets */
 #define TUPLE_F_SERVICE		4	/* Flow represents service/slave map */
 
@@ -335,9 +334,15 @@ static inline int __inline__ ct_lookup6(void *map, struct ipv6_ct_tuple *tuple,
 	switch (tuple->nexthdr) {
 	case IPPROTO_ICMPV6:
 		if (1) {
+			__be16 identifier = 0;
 			__u8 type;
 
 			if (skb_load_bytes(skb, l4_off, &type, 1) < 0)
+				return DROP_CT_INVALID_HDR;
+			if ((type == ICMP_ECHO || type == ICMP_ECHOREPLY) &&
+			     skb_load_bytes(skb, l4_off + offsetof(struct icmp6hdr,
+								   icmp6_dataun.u_echo.identifier),
+					    &identifier, 2) < 0)
 				return DROP_CT_INVALID_HDR;
 
 			tuple->sport = 0;
@@ -352,11 +357,11 @@ static inline int __inline__ ct_lookup6(void *map, struct ipv6_ct_tuple *tuple,
 				break;
 
 			case ICMPV6_ECHO_REPLY:
-				tuple->dport = ICMPV6_ECHO_REQUEST;
+				tuple->sport = identifier;
 				break;
 
 			case ICMPV6_ECHO_REQUEST:
-				tuple->sport = type;
+				tuple->dport = identifier;
 				/* fall through */
 			default:
 				action = ACTION_CREATE;
@@ -492,9 +497,14 @@ static inline int __inline__ ct_lookup4(void *map, struct ipv4_ct_tuple *tuple,
 	switch (tuple->nexthdr) {
 	case IPPROTO_ICMP:
 		if (1) {
+			__be16 identifier = 0;
 			__u8 type;
 
 			if (skb_load_bytes(skb, off, &type, 1) < 0)
+				return DROP_CT_INVALID_HDR;
+			if ((type == ICMP_ECHO || type == ICMP_ECHOREPLY) &&
+			     skb_load_bytes(skb, off + offsetof(struct icmphdr, un.echo.id),
+					    &identifier, 2) < 0)
 				return DROP_CT_INVALID_HDR;
 
 			tuple->sport = 0;
@@ -508,11 +518,11 @@ static inline int __inline__ ct_lookup4(void *map, struct ipv4_ct_tuple *tuple,
 				break;
 
 			case ICMP_ECHOREPLY:
-				tuple->dport = ICMP_ECHO;
+				tuple->sport = identifier;
 				break;
 
 			case ICMP_ECHO:
-				tuple->sport = type;
+				tuple->dport = identifier;
 				/* fall through */
 			default:
 				action = ACTION_CREATE;
@@ -591,6 +601,8 @@ static inline void __inline__ ct_delete6(void *map, struct ipv6_ct_tuple *tuple,
 
 	if ((err = map_delete_elem(map, tuple)) < 0)
 		cilium_dbg(skb, DBG_ERROR_RET, BPF_FUNC_map_delete_elem, err);
+	else
+		snat_v6_delete_tuples(tuple);
 }
 
 static inline void __inline__ ct_update6_slave(void *map,
@@ -668,6 +680,8 @@ static inline void __inline__ ct_delete4(void *map, struct ipv4_ct_tuple *tuple,
 
 	if ((err = map_delete_elem(map, tuple)) < 0)
 		cilium_dbg(skb, DBG_ERROR_RET, BPF_FUNC_map_delete_elem, err);
+	else
+		snat_v4_delete_tuples(tuple);
 }
 
 static inline void __inline__ ct_update4_slave(void *map,
